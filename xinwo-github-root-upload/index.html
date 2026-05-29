@@ -1450,17 +1450,23 @@
 
       function renderBackup() {
         const total = Object.values(db).reduce((sum, list) => sum + list.length, 0);
+        const storageCount = localStorage.length;
         return `
           <section class="card">
-            <h2>导出 JSON / 导入 JSON</h2>
+            <h2>完整备份 / 恢复</h2>
             <div class="field">
               <strong>当前本地记录</strong>
               <p>共有 ${total} 条记录。数据只保存在这个浏览器的 localStorage 里。</p>
             </div>
+            <div style="height:10px"></div>
+            <div class="field">
+              <strong>完整 localStorage</strong>
+              <p>当前域名下共有 ${storageCount} 个 localStorage 数据项。导出会完整保存这些数据项。</p>
+            </div>
             <div style="height:12px"></div>
             <div class="actions">
-              <button class="btn" data-action="export" type="button">导出 JSON</button>
-              <button class="btn-soft" data-action="import" type="button">导入 JSON</button>
+              <button class="btn" data-action="export" type="button">一键导出全部 JSON</button>
+              <button class="btn-soft" data-action="import" type="button">一键导入 JSON 备份</button>
             </div>
           </section>
         `;
@@ -1616,23 +1622,58 @@
         render();
       }
 
+      function collectLocalStorage() {
+        const storage = {};
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (key) storage[key] = localStorage.getItem(key);
+        }
+        return storage;
+      }
+
+      function restoreLocalStorage(storage) {
+        localStorage.clear();
+        Object.entries(storage).forEach(([key, value]) => {
+          localStorage.setItem(key, String(value ?? ""));
+        });
+      }
+
+      function getStorageFromBackup(parsed) {
+        if (parsed && parsed.type === "full-localStorage-backup" && parsed.storage && typeof parsed.storage === "object") {
+          return parsed.storage;
+        }
+        if (parsed && parsed.localStorage && typeof parsed.localStorage === "object") {
+          return parsed.localStorage;
+        }
+        if (parsed && parsed.storage && typeof parsed.storage === "object") {
+          return parsed.storage;
+        }
+        if (parsed && (parsed.data || parsed.mood || parsed.evidence)) {
+          return { [STORAGE_KEY]: JSON.stringify(parsed.data || parsed) };
+        }
+        return null;
+      }
+
       function exportJson() {
         const payload = {
           app: "新我生活系统",
-          version: 1,
+          type: "full-localStorage-backup",
+          version: 2,
           exportedAt: new Date().toISOString(),
-          data: db
+          origin: location.origin,
+          path: location.pathname,
+          storage: collectLocalStorage()
         };
         const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = `新我生活系统备份-${dateKey()}.json`;
+        link.download = `新我生活系统完整备份-${dateKey()}.json`;
         document.body.appendChild(link);
         link.click();
         link.remove();
         URL.revokeObjectURL(url);
-        toast("JSON 已导出。");
+        toast("完整 JSON 备份已导出。");
       }
 
       function importJson(file) {
@@ -1641,17 +1682,14 @@
         reader.onload = () => {
           try {
             const parsed = JSON.parse(String(reader.result || "{}"));
-            const source = parsed.data || parsed;
-            const next = emptyDb();
-            Object.keys(next).forEach((key) => {
-              next[key] = Array.isArray(source[key]) ? source[key] : [];
-            });
-            if (!confirm("导入会替换当前浏览器里的全部记录，确定继续吗？")) return;
-            db = next;
-            state.edit = {};
-            saveDb();
-            toast("JSON 已导入。");
-            render();
+            const storage = getStorageFromBackup(parsed);
+            if (!storage) throw new Error("backup format not recognized");
+            const count = Object.keys(storage).length;
+            const ok = confirm(`导入会清空并替换当前网页的全部 localStorage 数据，共恢复 ${count} 个数据项。确定继续吗？`);
+            if (!ok) return;
+            restoreLocalStorage(storage);
+            sessionStorage.setItem("xinwo_restore_success", "1");
+            location.reload();
           } catch (error) {
             alert("导入失败，请确认文件是有效 JSON。");
           } finally {
@@ -1806,6 +1844,11 @@
 
       setInterval(tickTimer, 1000);
       render();
+
+      if (sessionStorage.getItem("xinwo_restore_success") === "1") {
+        sessionStorage.removeItem("xinwo_restore_success");
+        toast("备份已恢复成功。");
+      }
 
       /* 安装版离线缓存：需要在 HTTPS 静态站点上打开后才会生效。 */
       if ("serviceWorker" in navigator) {
